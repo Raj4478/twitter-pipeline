@@ -1,0 +1,113 @@
+name: Daily Twitter Dev Content
+
+on:
+  schedule:
+    # 9 AM IST = 3:30 AM UTC (morning commute — peak Indian dev Twitter time)
+    - cron: '30 3 * * *'
+    # 1 PM IST = 7:30 AM UTC (lunch break)
+    - cron: '30 7 * * *'
+    # 9 PM IST = 3:30 PM UTC (evening wind-down)
+    - cron: '30 15 * * *'
+  workflow_dispatch:
+    inputs:
+      niche:
+        description: 'Content niche'
+        required: false
+        default: 'system_design'
+        type: choice
+        options:
+          - system_design
+          - webdev
+          - career
+      topic:
+        description: 'Specific topic (leave empty for auto)'
+        required: false
+        default: ''
+      content_type:
+        description: 'Thread or single tweet'
+        required: false
+        default: 'thread'
+        type: choice
+        options:
+          - thread
+          - single
+
+permissions:
+  contents: write
+
+jobs:
+  tweet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip -q
+          pip install httpx pydantic pydantic-settings python-dotenv \
+                      Pillow requests -q
+
+      - name: Create folders
+        run: mkdir -p logs tmp/cards data
+
+      - name: Run pipeline
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
+          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALLOWED_USER_ID: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
+        run: |
+          NICHE="${{ github.event.inputs.niche || 'system_design' }}"
+          TOPIC="${{ github.event.inputs.topic || '' }}"
+          TYPE="${{ github.event.inputs.content_type || 'thread' }}"
+
+          # Rotate niches automatically on schedule
+          HOUR=$(TZ=Asia/Kolkata date +%H)
+          if [ -z "${{ github.event.inputs.niche }}" ]; then
+            if [ "$HOUR" -lt 11 ]; then
+              NICHE="system_design"
+            elif [ "$HOUR" -lt 15 ]; then
+              NICHE="webdev"
+            else
+              NICHE="career"
+            fi
+          fi
+
+          echo "Posting: niche=$NICHE topic=$TOPIC type=$TYPE"
+
+          if [ -n "$TOPIC" ]; then
+            python -m src.pipeline --niche "$NICHE" --topic "$TOPIC" --type "$TYPE"
+          else
+            python -m src.pipeline --niche "$NICHE" --type "$TYPE"
+          fi
+
+      - name: Keep repo active
+        if: always()
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          echo "Last run: $(TZ=Asia/Kolkata date '+%d %b %Y %I:%M %p IST')" > .last_run
+          git add .last_run data/ 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "chore: update topic tracker [skip ci]"
+          git push || true
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twitter-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 3
