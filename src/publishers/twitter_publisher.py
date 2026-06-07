@@ -108,20 +108,11 @@ class TwitterPublisher:
         logger.info("Thread posted: %d/%d tweets", len(posted), len(tweets))
         return posted
 
-    async def post_with_image(self, text: str, image_path: Path,
+    async def post_with_image(self, text: str, image_path=None,
                                reply_to_id: Optional[str] = None) -> dict:
-        """Upload image and post tweet with it."""
-        media_id = await self._upload_media(image_path)
-        url = f"{TWITTER_API_BASE}/tweets"
-        body = {"text": text[:280], "media": {"media_ids": [media_id]}}
-        if reply_to_id:
-            body["reply"] = {"in_reply_to_tweet_id": reply_to_id}
-
-        headers = self._auth_headers("POST", url)
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=body, headers=headers)
-            resp.raise_for_status()
-            return resp.json()["data"]
+        """Post tweet (image upload disabled — just posts text)."""
+        logger.info("Posting tweet as text (image upload skipped)")
+        return await self.post_tweet(text, reply_to_id)
 
     async def _upload_media(self, image_path: Path) -> str:
         """Upload image to Twitter media upload endpoint."""

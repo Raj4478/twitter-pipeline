@@ -91,19 +91,9 @@ async def run_pipeline(
             logger.info("[3/4] Posting to Twitter...")
 
             if content_type == "thread":
-                # Post hook with card image
-                if card_path and card_path.exists():
-                    first = await publisher.post_with_image(tweets[0], card_path)
-                else:
-                    first = await publisher.post_tweet(tweets[0])
-                posted_ids.append(first["id"])
-
-                # Post remaining tweets as replies
-                reply_id = first["id"]
-                for tweet_text in tweets[1:]:
-                    t = await publisher.post_tweet(tweet_text, reply_id)
-                    posted_ids.append(t["id"])
-                    reply_id = t["id"]
+                # Post full thread as text (image upload skipped — OAuth complexity)
+                posted = await publisher.post_thread(tweets)
+                posted_ids = [t["id"] for t in posted]
             else:
                 t = await publisher.post_tweet(tweets[0])
                 posted_ids.append(t["id"])
