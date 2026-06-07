@@ -26,8 +26,7 @@ class TwitterPublisher:
 
     def _auth_headers(self, method: str, url: str) -> dict:
         """Generate OAuth 1.0a headers for Twitter API v2 JSON requests.
-        
-        NOTE: For JSON body requests, body params are NOT included in the
+        For JSON body requests, body params are NOT included in the
         OAuth signature base string (only applies to form-encoded requests).
         """
         oauth_params = {
@@ -63,6 +62,13 @@ class TwitterPublisher:
             f'{urllib.parse.quote(k, safe="")}="{urllib.parse.quote(v, safe="")}"'
             for k, v in sorted(oauth_params.items())
         )
+
+        # DEBUG: log credential fingerprints (not full values)
+        logger.info("DEBUG oauth_consumer_key prefix: %s", self.settings.twitter_api_key[:6] if self.settings.twitter_api_key else "EMPTY")
+        logger.info("DEBUG oauth_token prefix: %s", self.settings.twitter_access_token[:6] if self.settings.twitter_access_token else "EMPTY")
+        logger.info("DEBUG api_secret set: %s", bool(self.settings.twitter_api_secret))
+        logger.info("DEBUG access_token_secret set: %s", bool(self.settings.twitter_access_token_secret))
+
         return {"Authorization": auth_header, "Content-Type": "application/json"}
 
     async def post_tweet(self, text: str, reply_to_id: Optional[str] = None) -> dict:
@@ -72,15 +78,20 @@ class TwitterPublisher:
         if reply_to_id:
             body["reply"] = {"in_reply_to_tweet_id": reply_to_id}
 
-        # Body is NOT passed to _auth_headers — JSON bodies excluded from OAuth signing
         headers = self._auth_headers("POST", url)
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(url, json=body, headers=headers)
+
+            # DEBUG: log full Twitter error response
+            if resp.status_code != 201:
+                logger.error("Twitter API error %d: %s", resp.status_code, resp.text)
+
             if resp.status_code == 429:
                 logger.warning("Rate limited — waiting 60s")
                 await asyncio.sleep(60)
                 resp = await client.post(url, json=body, headers=headers)
+
             resp.raise_for_status()
             data = resp.json()
             logger.info("Tweet posted: %s", data["data"]["id"])
