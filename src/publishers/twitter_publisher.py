@@ -5,6 +5,12 @@ Uses OAuth 1.0a (free tier compatible).
 
 import logging
 import time
+import hmac
+import hashlib
+import base64
+import urllib.parse
+import uuid
+import asyncio
 from pathlib import Path
 from typing import Optional
 import httpx
@@ -18,15 +24,12 @@ class TwitterPublisher:
     def __init__(self, settings):
         self.settings = settings
 
-    def _auth_headers(self, method: str, url: str, body: dict = None) -> dict:
-        """Generate OAuth 1.0a headers."""
-        import hmac
-        import hashlib
-        import base64
-        import urllib.parse
-        import time
-        import uuid
-
+    def _auth_headers(self, method: str, url: str) -> dict:
+        """Generate OAuth 1.0a headers for Twitter API v2 JSON requests.
+        
+        NOTE: For JSON body requests, body params are NOT included in the
+        OAuth signature base string (only applies to form-encoded requests).
+        """
         oauth_params = {
             "oauth_consumer_key": self.settings.twitter_api_key,
             "oauth_nonce": uuid.uuid4().hex,
@@ -36,14 +39,10 @@ class TwitterPublisher:
             "oauth_version": "1.0",
         }
 
-        # Build signature base
-        params = dict(oauth_params)
-        if body:
-            params.update({k: v for k, v in body.items() if isinstance(v, str)})
-
+        # For JSON requests: sign ONLY oauth params — never include JSON body
         sorted_params = "&".join(
             f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(str(v), safe='')}"
-            for k, v in sorted(params.items())
+            for k, v in sorted(oauth_params.items())
         )
         base_string = "&".join([
             method.upper(),
@@ -73,6 +72,7 @@ class TwitterPublisher:
         if reply_to_id:
             body["reply"] = {"in_reply_to_tweet_id": reply_to_id}
 
+        # Body is NOT passed to _auth_headers — JSON bodies excluded from OAuth signing
         headers = self._auth_headers("POST", url)
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -88,7 +88,6 @@ class TwitterPublisher:
 
     async def post_thread(self, tweets: list[str]) -> list[dict]:
         """Post a full thread. Returns list of tweet data."""
-        import asyncio
         posted = []
         reply_to_id = None
 
@@ -98,7 +97,6 @@ class TwitterPublisher:
                 tweet_data = await self.post_tweet(tweet_text, reply_to_id)
                 posted.append(tweet_data)
                 reply_to_id = tweet_data["id"]
-                # Delay between tweets to avoid rate limiting
                 if i < len(tweets) - 1:
                     await asyncio.sleep(3)
             except Exception as e:
@@ -120,15 +118,13 @@ class TwitterPublisher:
         headers = self._auth_headers("POST", upload_url)
 
         with open(image_path, "rb") as f:
-            import base64
             media_data = base64.b64encode(f.read()).decode()
 
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 upload_url,
                 data={"media_data": media_data, "media_category": "tweet_image"},
-                headers={k: v for k, v in headers.items()
-                         if k == "Authorization"},
+                headers={"Authorization": headers["Authorization"]},
             )
             resp.raise_for_status()
             media_id = resp.json()["media_id_string"]
