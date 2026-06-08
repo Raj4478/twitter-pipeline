@@ -1,12 +1,12 @@
-name: Daily Twitter Dev Content
+name: Daily Dev Content — Telegram
 
 on:
   schedule:
-    # 9 AM IST = 3:30 AM UTC (morning commute — peak Indian dev Twitter time)
+    # 9 AM IST = 3:30 AM UTC
     - cron: '30 3 * * *'
-    # 1 PM IST = 7:30 AM UTC (lunch break)
+    # 1 PM IST = 7:30 AM UTC
     - cron: '30 7 * * *'
-    # 9 PM IST = 3:30 PM UTC (evening wind-down)
+    # 9 PM IST = 3:30 PM UTC
     - cron: '30 15 * * *'
   workflow_dispatch:
     inputs:
@@ -31,12 +31,20 @@ on:
         options:
           - thread
           - single
+      dry_run:
+        description: 'Dry run (no actual posting)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: write
 
 jobs:
-  tweet:
+  post:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -52,29 +60,25 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip -q
-          pip install httpx pydantic pydantic-settings python-dotenv \
-                      Pillow requests -q
+          pip install httpx pydantic pydantic-settings python-dotenv Pillow -q
 
       - name: Create folders
         run: mkdir -p logs tmp/cards data
 
       - name: Run pipeline
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
-          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
-          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
-          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
-          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALLOWED_USER_ID: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
         run: |
           NICHE="${{ github.event.inputs.niche || 'system_design' }}"
           TOPIC="${{ github.event.inputs.topic || '' }}"
           TYPE="${{ github.event.inputs.content_type || 'thread' }}"
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
 
-          # Rotate niches automatically on schedule
+          # Auto-rotate niches on schedule
           HOUR=$(TZ=Asia/Kolkata date +%H)
           if [ -z "${{ github.event.inputs.niche }}" ]; then
             if [ "$HOUR" -lt 11 ]; then
@@ -86,13 +90,12 @@ jobs:
             fi
           fi
 
-          echo "Posting: niche=$NICHE topic=$TOPIC type=$TYPE"
+          echo "Posting: niche=$NICHE topic=$TOPIC type=$TYPE dry_run=$DRY_RUN"
 
-          if [ -n "$TOPIC" ]; then
-            python -m src.pipeline --niche "$NICHE" --topic "$TOPIC" --type "$TYPE"
-          else
-            python -m src.pipeline --niche "$NICHE" --type "$TYPE"
-          fi
+          CMD="python -m src.pipeline --niche $NICHE --type $TYPE"
+          [ -n "$TOPIC" ] && CMD="$CMD --topic \"$TOPIC\""
+          [ "$DRY_RUN" = "true" ] && CMD="$CMD --dry-run"
+          eval $CMD
 
       - name: Keep repo active
         if: always()
@@ -108,6 +111,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: twitter-logs-${{ github.run_number }}
+          name: pipeline-logs-${{ github.run_number }}
           path: logs/
-          retention-days: 3
+          retention-days: 7
