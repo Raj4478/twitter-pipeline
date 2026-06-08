@@ -3,14 +3,8 @@ Telegram Publisher — posts Twitter threads to a Telegram channel.
 
 Strategy:
   - Tweet 1 (hook): sent as photo with card image + caption (1024 char limit)
-  - Tweets 2-N: sent as individual text messages, each as a reply to the previous
-    → creates a clean thread-like chain in Telegram
+  - Tweets 2-N: sent as individual text messages, each as a reply to previous
   - Final message: summary with hashtags + tweet count
-
-Telegram API limits:
-  - Photo caption: 1024 characters
-  - Text message: 4096 characters
-  - Rate limit: ~30 messages/second (we add 0.5s delay to be safe)
 """
 
 import logging
@@ -30,7 +24,7 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 class TelegramPublisher:
     def __init__(self, settings):
         self.token = settings.telegram_bot_token
-        self.chat_id = settings.telegram_channel_id  # channel like @mychannel or -100xxxxx
+        self.chat_id = settings.telegram_channel_id
 
     def _api(self, method: str, data: dict) -> dict:
         url = TELEGRAM_API.format(token=self.token, method=method)
@@ -44,18 +38,16 @@ class TelegramPublisher:
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             body = e.read().decode()
-            logger.error("Telegram API error %d: %s", e.code, body)
+            logger.error("Telegram API error %d on %s: %s", e.code, method, body)
             raise Exception(f"Telegram {method} failed {e.code}: {body}")
 
     def _send_photo(self, photo_path: Path, caption: str,
                     reply_to: Optional[int] = None) -> int:
-        """Upload photo + caption. Returns message_id."""
-        url = TELEGRAM_API.format(token=self.token, method="sendPhoto")
-
-        # Build multipart form data
+        """Upload photo + caption via multipart. Returns message_id."""
         import uuid
+        url = TELEGRAM_API.format(token=self.token, method="sendPhoto")
         boundary = uuid.uuid4().hex
-        caption_bytes = caption[:1024].encode("utf-8")  # Telegram limit
+        caption_bytes = caption[:1024].encode("utf-8")
 
         with open(photo_path, "rb") as f:
             photo_bytes = f.read()
@@ -91,11 +83,17 @@ class TelegramPublisher:
             url, data=body,
             headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-            msg_id = data["result"]["message_id"]
-            logger.info("Photo sent, message_id=%d", msg_id)
-            return msg_id
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+                msg_id = data["result"]["message_id"]
+                logger.info("Photo sent, message_id=%d", msg_id)
+                return msg_id
+        except urllib.error.HTTPError as e:
+            body_err = e.read().decode()
+            logger.error("sendPhoto failed %d: %s | chat_id=%s | token_prefix=%s",
+                         e.code, body_err, self.chat_id, self.token[:10])
+            raise Exception(f"sendPhoto failed {e.code}: {body_err}")
 
     def _send_text(self, text: str, reply_to: Optional[int] = None) -> int:
         """Send text message. Returns message_id."""
@@ -113,27 +111,39 @@ class TelegramPublisher:
         logger.info("Text sent, message_id=%d", msg_id)
         return msg_id
 
+    def verify_bot(self):
+        """Test bot token and channel access before posting."""
+        # 1. Check bot token is valid
+        me = self._api("getMe", {})
+        bot_name = me["result"]["username"]
+        logger.info("Bot verified: @%s", bot_name)
+
+        # 2. Check channel access
+        try:
+            chat = self._api("getChat", {"chat_id": self.chat_id})
+            chat_title = chat["result"].get("title", self.chat_id)
+            logger.info("Channel verified: %s (%s)", chat_title, self.chat_id)
+        except Exception as e:
+            raise Exception(
+                f"Cannot access channel {self.chat_id}. "
+                f"Make sure: 1) Channel exists 2) Bot is admin 3) TELEGRAM_CHANNEL_ID is correct. "
+                f"Error: {e}"
+            )
+
     def post_thread(self, tweets: list[str], card_path: Optional[Path] = None,
                     topic: str = "", niche: str = "") -> dict:
-        """
-        Post a full thread to Telegram channel.
-
-        Structure:
-          Message 1: [Card image] + Tweet 1 (hook) as caption
-          Message 2: Tweet 2, replying to Message 1
-          Message 3: Tweet 3, replying to Message 2
-          ...
-          Final msg: 🧵 Thread summary with topic + hashtags
-        """
+        """Post full thread to Telegram channel."""
         if not tweets:
             raise ValueError("No tweets to post")
+
+        # Verify bot + channel before attempting to post
+        self.verify_bot()
 
         first_msg_id = None
         last_msg_id = None
 
         # ── Message 1: Card + Hook ─────────────────────────────────────
         hook_text = tweets[0]
-        # Format hook nicely — add thread indicator
         caption = f"{hook_text}\n\n🧵 <i>Thread below ↓</i>"
 
         if card_path and card_path.exists():
@@ -146,15 +156,13 @@ class TelegramPublisher:
         last_msg_id = first_msg_id
         time.sleep(0.5)
 
-        # ── Messages 2-N: Thread tweets as replies ─────────────────────
+        # ── Messages 2-N: Thread replies ───────────────────────────────
         for i, tweet in enumerate(tweets[1:], start=2):
             logger.info("Sending tweet %d/%d", i, len(tweets))
-            # Add tweet number indicator
-            formatted = f"{tweet}"
-            last_msg_id = self._send_text(formatted, reply_to=last_msg_id)
-            time.sleep(0.5)  # Be nice to Telegram rate limits
+            last_msg_id = self._send_text(tweet, reply_to=last_msg_id)
+            time.sleep(0.5)
 
-        # ── Final summary message ──────────────────────────────────────
+        # ── Final summary ──────────────────────────────────────────────
         hashtags = {
             "system_design": "#SystemDesign #SoftwareEngineering #Tech",
             "webdev": "#WebDev #Programming #BackendDev",
@@ -167,10 +175,9 @@ class TelegramPublisher:
             f"{hashtags}"
         )
         self._send_text(summary, reply_to=last_msg_id)
-        time.sleep(0.5)
 
         channel_url = f"https://t.me/{self.chat_id.lstrip('@')}" if self.chat_id.startswith("@") else ""
-        logger.info("Thread posted to Telegram: %d tweets, first_id=%d", len(tweets), first_msg_id)
+        logger.info("Thread posted: %d tweets, first_id=%d", len(tweets), first_msg_id)
 
         return {
             "first_message_id": first_msg_id,
@@ -181,6 +188,7 @@ class TelegramPublisher:
     def post_single(self, tweet: str, card_path: Optional[Path] = None,
                     niche: str = "") -> dict:
         """Post a single tweet to Telegram."""
+        self.verify_bot()
         hashtags = {
             "system_design": "#SystemDesign #SoftwareEngineering",
             "webdev": "#WebDev #Programming",
