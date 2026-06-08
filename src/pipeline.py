@@ -1,6 +1,6 @@
 """
-Twitter Dev Content Pipeline
-Generates and posts system design + webdev threads to Twitter/X.
+Twitter Dev Content Pipeline — now posts to Telegram channel instead of Twitter.
+Generates thread → creates card → posts to Telegram as a threaded chain.
 """
 
 import asyncio
@@ -14,7 +14,7 @@ from typing import Optional
 
 from src.generators.thread_generator import ThreadGenerator
 from src.generators.card_generator import CardGenerator
-from src.publishers.twitter_publisher import TwitterPublisher
+from src.publishers.telegram_publisher import TelegramPublisher
 from config.settings import Settings
 from config.topics import TopicBank
 
@@ -22,15 +22,18 @@ logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
-def now_ist(): return datetime.now(IST)
+def now_ist():
+    return datetime.now(IST)
 
 
-def send_telegram(token: str, chat_id: str, msg: str):
+def send_telegram_notification(token: str, chat_id: str, msg: str):
+    """Send a plain notification message (to personal chat, not channel)."""
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         data = json.dumps({"chat_id": chat_id, "text": msg}).encode()
-        req = urllib.request.Request(url, data=data,
-                                     headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}
+        )
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
         logger.warning("Telegram notification failed: %s", e)
@@ -43,16 +46,16 @@ async def run_pipeline(
     dry_run: bool = False,
 ) -> dict:
     settings = Settings()
-    token = settings.telegram_bot_token
-    chat_id = settings.telegram_allowed_user_id
 
     logger.info("=" * 60)
-    logger.info("TWITTER PIPELINE STARTED | niche=%s type=%s dry_run=%s",
-                niche, content_type, dry_run)
+    logger.info(
+        "PIPELINE STARTED | niche=%s type=%s dry_run=%s",
+        niche, content_type, dry_run
+    )
     logger.info("=" * 60)
 
     try:
-        # ── 1. Topic ───────────────────────────────────────────────────
+        # ── 1. Pick topic ──────────────────────────────────────────────
         topic_bank = TopicBank()
         selected_topic = topic or topic_bank.pick_unused(niche)
         logger.info("[1/4] ✅ Topic: %s", selected_topic)
@@ -67,7 +70,6 @@ async def run_pipeline(
             logger.info("[2/4] ✅ Thread: %d tweets | hook: %s",
                         len(tweets), content.hook[:60])
 
-            # Generate card for hook tweet
             card_path = card_gen.generate(
                 topic=selected_topic,
                 image_text=content.image_text,
@@ -75,48 +77,57 @@ async def run_pipeline(
                 facts=content.tweets[:4],
             )
             logger.info("[2/4] ✅ Card: %s", card_path)
-
         else:
             content = await gen.generate_single(selected_topic, niche)
             tweets = [content.format_for_posting()]
             card_path = None
-            logger.info("[2/4] ✅ Single tweet: %s", content.tweet[:60])
+            logger.info("[2/4] ✅ Single tweet: %s", tweets[0][:60])
 
-        # ── 3. Post to Twitter ─────────────────────────────────────────
-        posted_ids = []
-        tweet_url = ""
+        # ── 3. Post to Telegram channel ────────────────────────────────
+        channel_url = ""
 
         if not dry_run:
-            publisher = TwitterPublisher(settings)
-            logger.info("[3/4] Posting to Twitter...")
+            publisher = TelegramPublisher(settings)
+            logger.info("[3/4] Posting to Telegram channel...")
 
             if content_type == "thread":
-                # Post full thread as text (image upload skipped — OAuth complexity)
-                posted = await publisher.post_thread(tweets)
-                posted_ids = [t["id"] for t in posted]
+                result = publisher.post_thread(
+                    tweets=tweets,
+                    card_path=card_path,
+                    topic=selected_topic,
+                    niche=niche,
+                )
             else:
-                t = await publisher.post_tweet(tweets[0])
-                posted_ids.append(t["id"])
+                result = publisher.post_single(
+                    tweet=tweets[0],
+                    card_path=card_path,
+                    niche=niche,
+                )
 
-            tweet_url = f"https://twitter.com/i/web/status/{posted_ids[0]}"
-            logger.info("[3/4] ✅ Posted: %s", tweet_url)
+            channel_url = result.get("channel_url", "")
+            logger.info("[3/4] ✅ Posted %d messages to Telegram",
+                        result.get("tweet_count", 0))
         else:
             logger.info("[3/4] ⏭️  Dry run — skipping post")
             logger.info("Preview:\n%s", "\n---\n".join(tweets[:3]))
 
-        # ── 4. Notify Telegram ─────────────────────────────────────────
+        # ── 4. Notify personal Telegram chat ──────────────────────────
         topic_bank.mark_used(niche, selected_topic)
 
-        hook_text = content.hook if hasattr(content, 'hook') else content.tweet
+        hook_text = content.hook if hasattr(content, "hook") else tweets[0]
         msg = (
-            f"🐦 Twitter thread posted!\n"
+            f"✅ Telegram thread posted!\n"
             f"Topic: {selected_topic}\n"
             f"Niche: {niche}\n"
             f"Tweets: {len(tweets)}\n"
             f"Hook: {hook_text[:80]}\n"
-            f"URL: {tweet_url or 'dry-run'}"
+            f"Channel: {channel_url or 'dry-run'}"
         )
-        send_telegram(token, chat_id, msg)
+        send_telegram_notification(
+            settings.telegram_bot_token,
+            settings.telegram_allowed_user_id,
+            msg,
+        )
 
         logger.info("=" * 60)
         logger.info("PIPELINE COMPLETE ✅")
@@ -126,7 +137,7 @@ async def run_pipeline(
             "status": "success",
             "topic": selected_topic,
             "niche": niche,
-            "tweet_url": tweet_url,
+            "channel_url": channel_url,
             "tweet_count": len(tweets),
             "dry_run": dry_run,
         }
@@ -135,8 +146,11 @@ async def run_pipeline(
         import traceback
         tb = traceback.format_exc()
         logger.error("PIPELINE FAILED ❌: %s\n%s", exc, tb)
-        send_telegram(token, chat_id,
-                      f"❌ Twitter pipeline failed!\nTopic: {topic}\nError: {str(exc)[:200]}")
+        send_telegram_notification(
+            settings.telegram_bot_token,
+            settings.telegram_allowed_user_id,
+            f"❌ Pipeline failed!\nTopic: {topic}\nError: {str(exc)[:200]}",
+        )
         raise
 
 
@@ -159,8 +173,8 @@ def main():
         handlers=[
             logging.StreamHandler(sys.stdout),
             logging.FileHandler(
-                log_dir / f"twitter_{now_ist().strftime('%Y%m%d')}.log",
-                encoding="utf-8"
+                log_dir / f"pipeline_{now_ist().strftime('%Y%m%d')}.log",
+                encoding="utf-8",
             ),
         ],
     )
