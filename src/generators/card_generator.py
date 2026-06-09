@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path("tmp/cards")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-CARD_W, CARD_H = 1200, 720
+CARD_W, CARD_H = 1280, 760
 
 # PIL palette
 BG_DARK_PIL  = (13,  17,  23)
@@ -40,6 +40,7 @@ WHITE_PIL    = (230, 237, 243)
 GREY_PIL     = (110, 118, 129)
 PURPLE_PIL   = (188, 140, 255)
 CYAN_PIL     = (79,  201, 197)
+MUTED_PIL    = (90,  110, 150)
 RED_PIL      = (248, 81,  73)
 
 # ── Gemini prompt for graph structure ─────────────────────────────────────────
@@ -295,85 +296,135 @@ class SmartCardGenerator:
 
     def _composite(self, diagram_png: Path, topic: str, niche: str,
                    facts: list[str], out_path: Path):
-        """Composite: diagram (top 75%) + info panel (bottom 25%)."""
+        """Composite: diagram (top 74%) + styled info panel (bottom 26%)."""
         from PIL import Image, ImageDraw
 
-        DIAGRAM_H = 540
-        PANEL_H   = CARD_H - DIAGRAM_H  # 180px
+        DIAGRAM_H = 565
+        PANEL_H   = CARD_H - DIAGRAM_H   # 155px
 
+        # ── Canvas with dot-grid background ───────────────────────────
         canvas = Image.new("RGB", (CARD_W, CARD_H), BG_DARK_PIL)
-        draw = ImageDraw.Draw(canvas)
+        draw   = ImageDraw.Draw(canvas)
 
-        # ── Diagram section ───────────────────────────────────────────
+        for x in range(0, CARD_W, 40):
+            for y in range(0, DIAGRAM_H, 40):
+                draw.ellipse([x - 1, y - 1, x + 1, y + 1], fill=(22, 32, 55))
+
+        # ── Paste diagram ──────────────────────────────────────────────
         diagram = Image.open(diagram_png).convert("RGBA")
-        bg = Image.new("RGB", diagram.size, BG_DARK_PIL)
-        bg.paste(diagram, mask=diagram.split()[3])
+        bg_diag = Image.new("RGB", diagram.size, BG_DARK_PIL)
+        bg_diag.paste(diagram, mask=diagram.split()[3])
 
-        # Scale to fit keeping aspect ratio
-        ratio = bg.width / bg.height
+        ratio = bg_diag.width / bg_diag.height
         if ratio > CARD_W / DIAGRAM_H:
-            new_w, new_h = CARD_W, int(CARD_W / ratio)
+            nw, nh = CARD_W, int(CARD_W / ratio)
         else:
-            new_h, new_w = DIAGRAM_H, int(DIAGRAM_H * ratio)
+            nh, nw = DIAGRAM_H, int(DIAGRAM_H * ratio)
 
-        bg = bg.resize((new_w, new_h), Image.LANCZOS)
-        x_off = (CARD_W - new_w) // 2
-        y_off = (DIAGRAM_H - new_h) // 2
-        canvas.paste(bg, (x_off, y_off))
+        bg_diag = bg_diag.resize((nw, nh), Image.LANCZOS)
+        xo = (CARD_W - nw) // 2
+        yo = (DIAGRAM_H - nh) // 2
+        canvas.paste(bg_diag, (xo, yo))
 
-        # Gradient fade at bottom of diagram
-        for i in range(80):
-            alpha = int(255 * (i / 80) ** 1.5)
-            draw.rectangle([0, DIAGRAM_H - 80 + i, CARD_W, DIAGRAM_H - 79 + i],
-                           fill=(*BG_DARK_PIL, alpha))
+        # ── Gradient fade at bottom of diagram ────────────────────────
+        grad = Image.new("RGBA", (CARD_W, 120), (0, 0, 0, 0))
+        gd   = ImageDraw.Draw(grad)
+        for i in range(120):
+            alpha = int(255 * (i / 120) ** 2)
+            gd.rectangle([0, i, CARD_W, i + 1], fill=(*BG_DARK_PIL, alpha))
+        canvas.paste(Image.new("RGB", (CARD_W, 120), BG_DARK_PIL),
+                     (0, DIAGRAM_H - 120), mask=grad.split()[3])
+
+        # ── Glowing side accent bars ───────────────────────────────────
+        accent = {
+            "system_design": BLUE_PIL,
+            "webdev":        GREEN_PIL,
+            "career":        PURPLE_PIL,
+        }.get(niche, BLUE_PIL)
+        accent2 = PURPLE_PIL if niche == "system_design" else BLUE_PIL
+
+        for i in range(5):
+            a = int(180 * (1 - i / 5))
+            draw.rectangle([i, 0, i + 1, DIAGRAM_H], fill=(*accent, a))
+            draw.rectangle([CARD_W - i - 1, 0, CARD_W - i, DIAGRAM_H],
+                           fill=(*accent2, a))
+
+        # ── Corner glow blobs ──────────────────────────────────────────
+        for cx, cy, col in [(0, 0, accent), (CARD_W, 0, accent2)]:
+            for r, a in [(80, 12), (50, 20), (25, 30)]:
+                draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                             fill=(*col, a))
 
         # ── Info panel ─────────────────────────────────────────────────
         panel_y = DIAGRAM_H
         draw.rectangle([0, panel_y, CARD_W, CARD_H], fill=BG_CARD_PIL)
 
-        accent = {
-            "system_design": BLUE_PIL,
-            "webdev": GREEN_PIL,
-            "career": PURPLE_PIL,
-        }.get(niche, BLUE_PIL)
+        # Glowing top border
+        for i in range(3):
+            a = int(255 * (1 - i / 3))
+            draw.rectangle([0, panel_y + i, CARD_W, panel_y + i + 1],
+                           fill=(*accent, a))
 
-        # Top accent border
-        draw.rectangle([0, panel_y, CARD_W, panel_y + 3], fill=accent)
+        # Topic title
+        title = topic.upper()
+        draw.text((CARD_W // 2, panel_y + 32), title,
+                  font=self._font(28), fill=WHITE_PIL, anchor="mm")
 
-        # Facts as inline chips
-        chip_x = 30
-        chip_y = panel_y + 18
-        chip_colors = [GREEN_PIL, CYAN_PIL, YELLOW_PIL, ORANGE_PIL]
+        # Underline
+        tw = min(len(title) * 17, CARD_W - 80)
+        draw.rectangle(
+            [CARD_W // 2 - tw // 2, panel_y + 50,
+             CARD_W // 2 + tw // 2, panel_y + 52],
+            fill=(*accent, 100)
+        )
+
+        # Fact chips
+        chip_colors = [BLUE_PIL, CYAN_PIL, GREEN_PIL, ORANGE_PIL]
+        chip_x, chip_y = 30, panel_y + 64
         for i, fact in enumerate(facts[:4]):
-            fact_short = fact[:55].strip()
-            text_w = len(fact_short) * 11 + 28
+            fact_s = fact[:55].strip()
+            fact_w = len(fact_s) * 11 + 32
+            if chip_x + fact_w > CARD_W - 30:
+                chip_x, chip_y = 30, chip_y + 40
 
-            if chip_x + text_w > CARD_W - 30:
-                chip_x = 30
-                chip_y += 38
-
-            draw.rounded_rectangle(
-                [chip_x, chip_y, chip_x + text_w, chip_y + 28],
-                radius=5, fill=BG_PANEL_PIL,
-                outline=chip_colors[i % 4], width=1,
+            # Chip glow fill
+            canvas.paste(
+                Image.new("RGB", (fact_w, 30), chip_colors[i % 4]),
+                (chip_x, chip_y),
+                mask=Image.new("L", (fact_w, 30), 28)
             )
-            draw.text((chip_x + 14, chip_y + 14), fact_short,
+            draw.rounded_rectangle(
+                [chip_x, chip_y, chip_x + fact_w, chip_y + 30],
+                radius=6, outline=chip_colors[i % 4], width=1
+            )
+            draw.text((chip_x + 16, chip_y + 15), fact_s,
                       font=self._font(14),
                       fill=chip_colors[i % 4], anchor="lm")
-            chip_x += text_w + 10
+            chip_x += fact_w + 12
 
-        # Bottom branding bar
-        bar_y = CARD_H - 36
-        draw.rectangle([0, bar_y, CARD_W, CARD_H], fill=BG_DARK_PIL)
-        draw.text((30, bar_y + 18), "🧵 THREAD",
+        # ── Bottom branding bar ────────────────────────────────────────
+        bar_y = CARD_H - 44
+        draw.rectangle([0, bar_y, CARD_W, CARD_H], fill=(10, 14, 24))
+        draw.rectangle([0, bar_y, CARD_W, bar_y + 1], fill=(*accent, 60))
+
+        draw.text((30, bar_y + 22), "⚡ @byte_blueprint",
                   font=self._font(17), fill=accent, anchor="lm")
+
+        niche_label = {
+            "system_design": "SYSTEM DESIGN",
+            "webdev":        "WEB DEV",
+            "career":        "CAREER",
+        }.get(niche, "TECH")
+        draw.text((CARD_W // 2, bar_y + 22), niche_label,
+                  font=self._font(16), fill=MUTED_PIL, anchor="mm")
+
         tags = {
-            "system_design": "#SystemDesign #HLD #SoftwareEngineering",
-            "webdev": "#WebDev #Backend #Programming",
-            "career": "#CareerAdvice #IndianDev",
+            "system_design": "#SystemDesign  #HLD  #SoftwareEngineering",
+            "webdev":        "#WebDev  #Backend  #Programming",
+            "career":        "#CareerAdvice  #IndianDev",
         }.get(niche, "#Tech")
-        draw.text((CARD_W - 30, bar_y + 18), tags,
-                  font=self._font(15), fill=GREY_PIL, anchor="rm")
+        draw.text((CARD_W - 30, bar_y + 22), tags,
+                  font=self._font(14), fill=MUTED_PIL, anchor="rm")
 
         canvas.save(str(out_path), "PNG", quality=95)
 
