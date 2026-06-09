@@ -62,7 +62,7 @@ async def run_pipeline(
 
         # ── 2. Generate content ────────────────────────────────────────
         gen = ThreadGenerator(settings)
-        card_gen = CardGenerator()
+        card_gen = CardGenerator(settings)
 
         if content_type == "thread":
             content = await gen.generate_thread(selected_topic, niche)
