@@ -129,6 +129,7 @@ class SmartCardGenerator:
         out_path = OUTPUT_DIR / f"card_{card_id}.png"
 
         # Try architecture diagram for system_design and webdev
+        logger.info("Card path: mmdc=%s niche=%s settings=%s", self._mmdc_available, niche, bool(self.settings))
         if self._mmdc_available and niche in ("system_design", "webdev") and self.settings:
             try:
                 return self._generate_architecture_card(
