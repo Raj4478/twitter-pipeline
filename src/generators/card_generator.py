@@ -145,16 +145,8 @@ class SmartCardGenerator:
                                      niche: str, facts: list[str],
                                      out_path: Path) -> Path:
         """Generate diagram via Gemini → Mermaid → PNG composite."""
-        import asyncio
-
-        # 1. Generate Mermaid code via Gemini
-        loop = asyncio.new_event_loop()
-        try:
-            mermaid_data = loop.run_until_complete(
-                self._generate_mermaid(topic, niche)
-            )
-        finally:
-            loop.close()
+        # 1. Generate Mermaid code via Gemini (sync — avoids nested event loop)
+        mermaid_data = self._generate_mermaid_sync(topic, niche)
 
         mermaid_code = mermaid_data.get("mermaid", "")
         if not mermaid_code:
@@ -171,8 +163,8 @@ class SmartCardGenerator:
         logger.info("Architecture card saved: %s", out_path)
         return out_path
 
-    async def _generate_mermaid(self, topic: str, niche: str) -> dict:
-        """Ask Gemini to generate Mermaid diagram code."""
+    def _generate_mermaid_sync(self, topic: str, niche: str) -> dict:
+        """Ask Gemini to generate Mermaid diagram code (synchronous)."""
         prompt_template = MERMAID_PROMPTS.get(niche, MERMAID_PROMPTS["system_design"])
         prompt = prompt_template.format(topic=topic)
 
@@ -190,8 +182,8 @@ class SmartCardGenerator:
                 "responseMimeType": "application/json",
             },
         }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=payload)
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(url, json=payload)
             resp.raise_for_status()
             raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(raw)
