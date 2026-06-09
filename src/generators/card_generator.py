@@ -136,7 +136,9 @@ class SmartCardGenerator:
                     topic, image_text, niche, facts or [], out_path
                 )
             except Exception as e:
-                logger.warning("Architecture card failed: %s — falling back to Pillow", e)
+                import traceback
+                logger.error("Architecture card FAILED (full trace):\n%s", traceback.format_exc())
+                logger.warning("Falling back to Pillow card")
 
         # Fallback: enhanced Pillow card
         return self._generate_pillow_card(topic, image_text, niche, facts or [], out_path)
