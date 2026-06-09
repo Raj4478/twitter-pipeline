@@ -47,29 +47,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Node.js (for Mermaid CLI)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install system dependencies
+      - name: Install system fonts
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q \
-            fonts-dejavu-core \
-            libgraphite2-dev \
-            chromium-browser \
-            libgbm-dev
-
-      - name: Install Mermaid CLI
-        run: |
-          npm install -g @mermaid-js/mermaid-cli@10.9.1 --silent
-          mmdc --version
+          sudo apt-get install -y -q fonts-dejavu-core
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip -q
-          pip install httpx pydantic pydantic-settings python-dotenv Pillow -q
+          pip install httpx pydantic pydantic-settings python-dotenv Pillow matplotlib -q
 
       - name: Create folders
         run: mkdir -p logs tmp/cards data
@@ -81,14 +67,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALLOWED_USER_ID: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
+          MPLBACKEND: Agg
         run: |
           NICHE="${{ github.event.inputs.niche || 'system_design' }}"
           TOPIC="${{ github.event.inputs.topic || '' }}"
           TYPE="${{ github.event.inputs.content_type || 'thread' }}"
           DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
 
-          # Auto-rotate niches on schedule
           HOUR=$(TZ=Asia/Kolkata date +%H)
           if [ -z "${{ github.event.inputs.niche }}" ]; then
             if [ "$HOUR" -lt 11 ]; then
