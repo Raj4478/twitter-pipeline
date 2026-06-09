@@ -2,12 +2,9 @@ name: Daily Dev Content — Telegram
 
 on:
   schedule:
-    # 9 AM IST = 3:30 AM UTC
-    - cron: '30 3 * * *'
-    # 1 PM IST = 7:30 AM UTC
-    - cron: '30 7 * * *'
-    # 9 PM IST = 3:30 PM UTC
-    - cron: '30 15 * * *'
+    - cron: '30 3 * * *'   # 9 AM IST
+    - cron: '30 7 * * *'   # 1 PM IST
+    - cron: '30 15 * * *'  # 9 PM IST
   workflow_dispatch:
     inputs:
       niche:
@@ -15,10 +12,7 @@ on:
         required: false
         default: 'system_design'
         type: choice
-        options:
-          - system_design
-          - webdev
-          - career
+        options: [system_design, webdev, career]
       topic:
         description: 'Specific topic (leave empty for auto)'
         required: false
@@ -28,17 +22,13 @@ on:
         required: false
         default: 'thread'
         type: choice
-        options:
-          - thread
-          - single
+        options: [thread, single]
       dry_run:
         description: 'Dry run (no actual posting)'
         required: false
         default: 'false'
         type: choice
-        options:
-          - 'false'
-          - 'true'
+        options: ['false', 'true']
 
 permissions:
   contents: write
@@ -46,7 +36,7 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -57,7 +47,26 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Setup Node.js (for Mermaid CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            fonts-dejavu-core \
+            libgraphite2-dev \
+            chromium-browser \
+            libgbm-dev
+
+      - name: Install Mermaid CLI
+        run: |
+          npm install -g @mermaid-js/mermaid-cli@10.9.1 --silent
+          mmdc --version
+
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip -q
           pip install httpx pydantic pydantic-settings python-dotenv Pillow -q
@@ -72,6 +81,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_ALLOWED_USER_ID: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium-browser
         run: |
           NICHE="${{ github.event.inputs.niche || 'system_design' }}"
           TOPIC="${{ github.event.inputs.topic || '' }}"
@@ -107,10 +117,12 @@ jobs:
           git diff --staged --quiet || git commit -m "chore: update topic tracker [skip ci]"
           git push || true
 
-      - name: Upload logs
+      - name: Upload logs + cards
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-logs-${{ github.run_number }}
-          path: logs/
+          name: pipeline-output-${{ github.run_number }}
+          path: |
+            logs/
+            tmp/cards/
           retention-days: 7
