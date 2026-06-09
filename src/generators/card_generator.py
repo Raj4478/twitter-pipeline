@@ -192,30 +192,54 @@ class SmartCardGenerator:
 
     def _render_mermaid(self, mermaid_code: str) -> Path:
         """Render Mermaid code to PNG using mmdc CLI."""
+        import shutil
         tmp_dir = Path(tempfile.mkdtemp())
         input_file = tmp_dir / "diagram.mmd"
         output_file = tmp_dir / "diagram.png"
         config_file = tmp_dir / "config.json"
+        puppeteer_file = tmp_dir / "puppeteer.json"
 
         input_file.write_text(mermaid_code, encoding="utf-8")
         config_file.write_text(MERMAID_CONFIG, encoding="utf-8")
 
-        result = subprocess.run(
-            [
-                "mmdc",
-                "-i", str(input_file),
-                "-o", str(output_file),
-                "-c", str(config_file),
-                "-w", "1200",
-                "-H", "450",
-                "-b", "transparent",
-                "--quiet",
-            ],
-            capture_output=True, text=True, timeout=30
-        )
+        # Find system Chromium/Chrome executable
+        chrome_paths = [
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+        ]
+        chrome_exe = next((p for p in chrome_paths if Path(p).exists()), None)
+        logger.info("Chrome executable: %s", chrome_exe)
+
+        # Write puppeteer config pointing to system Chrome
+        puppeteer_cfg = {
+            "args": ["--no-sandbox", "--disable-setuid-sandbox",
+                     "--disable-dev-shm-usage", "--disable-gpu"],
+        }
+        if chrome_exe:
+            puppeteer_cfg["executablePath"] = chrome_exe
+
+        puppeteer_file.write_text(json.dumps(puppeteer_cfg), encoding="utf-8")
+
+        cmd = [
+            "mmdc",
+            "-i", str(input_file),
+            "-o", str(output_file),
+            "-c", str(config_file),
+            "-p", str(puppeteer_file),
+            "-w", "1200",
+            "-H", "450",
+            "-b", "transparent",
+        ]
+
+        logger.info("Running mmdc: %s", " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        logger.info("mmdc stdout: %s", result.stdout[:300])
+        logger.info("mmdc stderr: %s", result.stderr[:300])
 
         if result.returncode != 0:
-            raise RuntimeError(f"mmdc failed: {result.stderr[:200]}")
+            raise RuntimeError(f"mmdc failed: {result.stderr[:300]}")
 
         if not output_file.exists():
             raise RuntimeError("mmdc produced no output file")
