@@ -2,9 +2,9 @@ name: Daily Dev Content — Telegram
 
 on:
   schedule:
-    - cron: '30 3 * * *'   # 9 AM IST
-    - cron: '30 7 * * *'   # 1 PM IST
-    - cron: '30 15 * * *'  # 9 PM IST
+    - cron: '30 3 * * *'
+    - cron: '30 7 * * *'
+    - cron: '30 15 * * *'
   workflow_dispatch:
     inputs:
       niche:
@@ -47,15 +47,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system fonts
+      - name: Install system dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q fonts-dejavu-core
+          sudo apt-get install -y -q graphviz fonts-dejavu-core
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip -q
-          pip install httpx pydantic pydantic-settings python-dotenv Pillow matplotlib -q
+          pip install httpx pydantic pydantic-settings python-dotenv Pillow diagrams matplotlib -q
 
       - name: Create folders
         run: mkdir -p logs tmp/cards data
@@ -76,12 +76,9 @@ jobs:
 
           HOUR=$(TZ=Asia/Kolkata date +%H)
           if [ -z "${{ github.event.inputs.niche }}" ]; then
-            if [ "$HOUR" -lt 11 ]; then
-              NICHE="system_design"
-            elif [ "$HOUR" -lt 15 ]; then
-              NICHE="webdev"
-            else
-              NICHE="career"
+            if [ "$HOUR" -lt 11 ]; then NICHE="system_design"
+            elif [ "$HOUR" -lt 15 ]; then NICHE="webdev"
+            else NICHE="career"
             fi
           fi
 
