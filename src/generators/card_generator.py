@@ -374,7 +374,7 @@ class SmartCardGenerator:
             y += 72
 
         # Divider
-        draw.rectangle([60, y + 10, CARD_W - 60, y + 3], fill=accent)
+        draw.rectangle([60, y + 10, CARD_W - 60, y + 14], fill=accent)
         y += 30
 
         # Facts
