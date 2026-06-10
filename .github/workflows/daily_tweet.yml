@@ -50,12 +50,20 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q graphviz fonts-dejavu-core
+          sudo apt-get install -y -q fonts-dejavu fonts-liberation
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip -q
-          pip install httpx pydantic pydantic-settings python-dotenv Pillow diagrams matplotlib -q
+          pip install httpx pydantic pydantic-settings python-dotenv Pillow diagrams -q
+
+      - name: Download diagrams icons
+        run: |
+          wget -q https://github.com/mingrammer/diagrams/archive/refs/heads/master.zip -O /tmp/diagrams_src.zip
+          unzip -q /tmp/diagrams_src.zip "diagrams-master/resources/*" -d /tmp/diag_src/
+          DIAGRAMS_PATH=$(python3 -c "import diagrams; import os; print(os.path.dirname(diagrams.__file__))")
+          cp -r /tmp/diag_src/diagrams-master/resources "$DIAGRAMS_PATH/"
+          echo "Icons installed: $(find $DIAGRAMS_PATH/resources -name '*.png' | wc -l) PNG files"
 
       - name: Create folders
         run: mkdir -p logs tmp/cards data
