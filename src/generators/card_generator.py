@@ -1,21 +1,18 @@
 """
-Smart Card Generator — uses `diagrams` library (Graphviz-based) for
-professional architecture diagrams with real component icons.
+Smart Card Generator — sky blue workflow pipeline diagrams.
 
 Flow:
-  1. Ask Gemini for structured graph JSON (nodes with types + edges)
-  2. Map node types to real diagrams library components
-  3. Render with Graphviz → PNG
-  4. Composite: diagram + bottom info panel via Pillow
-  5. Fallback to pure Pillow card if anything fails
+  1. Ask Gemini for structured pipeline stages JSON
+  2. Render with Pillow — sky blue bg, white stage cards, colored headers
+  3. Fallback to text card for career niche
 """
 
 import logging
 import textwrap
 import uuid
 import json
+import math
 import os
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -26,12 +23,29 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path("tmp/cards")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-CARD_W, CARD_H = 1280, 760
+CARD_W, CARD_H = 1280, 780
 
-# PIL palette
+# ── Colors ─────────────────────────────────────────────────────────────────────
+SKY_LIGHT  = (224, 242, 254)
+SKY_MID    = (186, 230, 253)
+SKY_DEEP   = (14,  165, 233)
+SKY_DEEPER = (2,   132, 199)
+NAVY       = (12,  40,  80)
+WHITE      = (255, 255, 255)
+GREY       = (100, 130, 160)
+
+# Stage color palettes [header, card_bg]
+STAGE_PALETTES = [
+    {"header": (234, 88,  12),  "light": (255, 237, 213)},  # Orange
+    {"header": (14,  165, 233), "light": (186, 230, 253)},  # Sky blue
+    {"header": (22,  163, 74),  "light": (220, 252, 231)},  # Green
+    {"header": (109, 40,  217), "light": (237, 233, 254)},  # Purple
+    {"header": (220, 38,  38),  "light": (254, 226, 226)},  # Red
+]
+
+# PIL fallbacks
 BG_DARK_PIL  = (13,  17,  23)
 BG_CARD_PIL  = (22,  27,  34)
-BG_PANEL_PIL = (30,  35,  45)
 BLUE_PIL     = (88,  166, 255)
 GREEN_PIL    = (63,  185, 80)
 YELLOW_PIL   = (255, 212, 0)
@@ -40,156 +54,145 @@ WHITE_PIL    = (230, 237, 243)
 GREY_PIL     = (110, 118, 129)
 PURPLE_PIL   = (188, 140, 255)
 CYAN_PIL     = (79,  201, 197)
-MUTED_PIL    = (90,  110, 150)
 RED_PIL      = (248, 81,  73)
+MUTED_PIL    = (90,  110, 150)
 
-# ── Gemini prompt for graph structure ─────────────────────────────────────────
+# ── Gemini prompts ──────────────────────────────────────────────────────────────
 
-GRAPH_SYSTEM = """You are a system design expert. Return ONLY valid JSON. No markdown, no explanation."""
+PIPELINE_SYSTEM = """You are a system design expert. Return ONLY valid JSON. No markdown."""
 
-GRAPH_PROMPT = '''Generate an architecture diagram for: "{topic}"
+PIPELINE_PROMPT = '''Generate a workflow pipeline diagram for: "{topic}"
 
-Map each component to one of these node_type values:
-  server, kafka, rabbitmq, redis, postgresql, mysql, mongodb, nginx, 
-  haproxy, zookeeper, prometheus, grafana, elasticsearch, user, internet,
-  cdn, loadbalancer, apigateway, cache, queue, database, service
+Map each node to one of these icon values:
+  server, kafka, rabbitmq, redis, postgresql, mysql, mongodb, nginx,
+  haproxy, zookeeper, prometheus, grafana, spark, hadoop, users, user,
+  mlflow, pytorch
 
-Return JSON:
+Return JSON with 3-5 stages, each stage has 2-3 nodes:
 {{
-  "title": "Short diagram title",
-  "direction": "LR",
-  "clusters": [
+  "title": "HOW {topic_upper} WORKS",
+  "stages": [
     {{
-      "name": "Cluster Name",
-      "color": "#161b22",
-      "border": "#58a6ff",
+      "title": "PRODUCERS",
+      "subtitle": "Event Sources",
       "nodes": [
-        {{"id": "A", "label": "Kafka\\nBroker", "node_type": "kafka"}},
-        {{"id": "B", "label": "ZooKeeper", "node_type": "zookeeper"}}
+        {{"label": "Order\\nService", "icon": "server"}},
+        {{"label": "Payment\\nService", "icon": "server"}}
+      ]
+    }},
+    {{
+      "title": "KAFKA CLUSTER",
+      "subtitle": "Message Broker",
+      "nodes": [
+        {{"label": "Broker 1\\nLeader", "icon": "kafka"}},
+        {{"label": "ZooKeeper\\nCoord", "icon": "zookeeper"}}
+      ]
+    }},
+    {{
+      "title": "CONSUMERS",
+      "subtitle": "Processing",
+      "nodes": [
+        {{"label": "Notification\\nService", "icon": "server"}},
+        {{"label": "Analytics\\nEngine", "icon": "spark"}}
+      ]
+    }},
+    {{
+      "title": "STORAGE",
+      "subtitle": "Persistence",
+      "nodes": [
+        {{"label": "PostgreSQL\\nEvents", "icon": "postgresql"}},
+        {{"label": "Redis\\nCache", "icon": "redis"}}
       ]
     }}
   ],
-  "standalone_nodes": [
-    {{"id": "P", "label": "Producer\\nApp", "node_type": "server"}},
-    {{"id": "DB", "label": "PostgreSQL", "node_type": "postgresql"}}
-  ],
-  "edges": [
-    {{"from": "P", "to": "A", "label": "publish", "style": "solid"}},
-    {{"from": "A", "to": "DB", "label": "persist", "style": "solid"}},
-    {{"from": "B", "to": "A", "label": "coordinate", "style": "dashed"}}
-  ]
+  "flow_labels": ["publish events", "distribute", "consume & process"]
 }}
 
 Rules:
-- 5-10 nodes total (readable on mobile)
-- Use real component names specific to {topic}
-- Group related components in clusters
-- direction: LR for pipelines, TB for layered architectures
-- dashed edges for control/management flows'''
+- 3-5 stages total, each 2-3 nodes
+- Stage titles and flow labels must reflect actual {topic} architecture
+- Use specific component names, not generic ones
+- flow_labels array length = stages count - 1'''
 
+# ── Icon mapping ────────────────────────────────────────────────────────────────
 
-# ── Node type → diagrams class mapping ────────────────────────────────────────
+ICON_MAP = {
+    "kafka":      "onprem/queue/kafka.png",
+    "rabbitmq":   "onprem/queue/rabbitmq.png",
+    "redis":      "onprem/inmemory/redis.png",
+    "postgresql": "onprem/database/postgresql.png",
+    "mysql":      "onprem/database/mysql.png",
+    "mongodb":    "onprem/database/mongodb.png",
+    "nginx":      "onprem/network/nginx.png",
+    "haproxy":    "onprem/network/haproxy.png",
+    "zookeeper":  "onprem/network/zookeeper.png",
+    "prometheus": "onprem/monitoring/prometheus.png",
+    "grafana":    "onprem/monitoring/grafana.png",
+    "spark":      "onprem/analytics/spark.png",
+    "hadoop":     "onprem/analytics/hadoop.png",
+    "server":     "onprem/compute/server.png",
+    "users":      "onprem/client/users.png",
+    "user":       "onprem/client/user.png",
+    "mlflow":     "onprem/mlops/mlflow.png",
+    "pytorch":    "onprem/mlops/pytorch.png",
+}
 
-def get_node_class(node_type: str):
-    """Map node_type string to diagrams library class."""
-    mapping = {
-        # Queues & Messaging
-        "kafka":       ("diagrams.onprem.queue",    "Kafka"),
-        "rabbitmq":    ("diagrams.onprem.queue",    "RabbitMQ"),
-        "queue":       ("diagrams.onprem.queue",    "Kafka"),
-        # Databases
-        "postgresql":  ("diagrams.onprem.database", "PostgreSQL"),
-        "mysql":       ("diagrams.onprem.database", "MySQL"),
-        "mongodb":     ("diagrams.onprem.database", "MongoDB"),
-        "cassandra":   ("diagrams.onprem.database", "Cassandra"),
-        "database":    ("diagrams.onprem.database", "PostgreSQL"),
-        # In-memory / Cache
-        "redis":       ("diagrams.onprem.inmemory", "Redis"),
-        "memcached":   ("diagrams.onprem.inmemory", "Memcached"),
-        "cache":       ("diagrams.onprem.inmemory", "Redis"),
-        # Network
-        "nginx":       ("diagrams.onprem.network",  "Nginx"),
-        "haproxy":     ("diagrams.onprem.network",  "HAProxy"),
-        "zookeeper":   ("diagrams.onprem.network",  "Zookeeper"),
-        "internet":    ("diagrams.onprem.network",  "Internet"),
-        "loadbalancer":("diagrams.onprem.network",  "HAProxy"),
-        "apigateway":  ("diagrams.onprem.network",  "Kong"),
-        "cdn":         ("diagrams.onprem.network",  "Nginx"),
-        # Compute
-        "server":      ("diagrams.onprem.compute",  "Server"),
-        "service":     ("diagrams.onprem.compute",  "Server"),
-        # Monitoring
-        "prometheus":  ("diagrams.onprem.monitoring","Prometheus"),
-        "grafana":     ("diagrams.onprem.monitoring","Grafana"),
-        # Client
-        "user":        ("diagrams.onprem.client",   "User"),
-        "users":       ("diagrams.onprem.client",   "Users"),
-        # Search
-        "elasticsearch":("diagrams.onprem.search",  "Elasticsearch"),
-    }
-    mod_path, class_name = mapping.get(node_type.lower(), ("diagrams.onprem.compute", "Server"))
-    import importlib
-    mod = importlib.import_module(mod_path)
-    return getattr(mod, class_name)
-
-
-# ── Main generator ─────────────────────────────────────────────────────────────
 
 class SmartCardGenerator:
 
     def __init__(self, settings=None):
         self.settings = settings
+        try:
+            import diagrams as _d
+            self._resources = Path(_d.__file__).parent / "resources"
+            self._has_icons = (self._resources / "onprem/queue/kafka.png").exists()
+        except Exception:
+            self._has_icons = False
+        logger.info("Icons available: %s", self._has_icons)
 
     def generate(self, topic: str, image_text: str, niche: str,
                  facts: list[str] = None) -> Path:
         card_id = uuid.uuid4().hex[:8]
         out_path = OUTPUT_DIR / f"card_{card_id}.png"
 
-        logger.info("Generating card | niche=%s settings=%s", niche, bool(self.settings))
-
         if niche in ("system_design", "webdev") and self.settings:
             try:
-                return self._generate_architecture_card(
+                return self._generate_pipeline_card(
                     topic, niche, facts or [], out_path
                 )
-            except Exception as e:
+            except Exception:
                 import traceback
-                logger.error("Architecture card FAILED:\n%s", traceback.format_exc())
-                logger.warning("Falling back to Pillow card")
+                logger.error("Pipeline card failed:\n%s", traceback.format_exc())
+                logger.warning("Falling back to text card")
 
-        return self._generate_pillow_card(topic, image_text, niche, facts or [], out_path)
+        return self._generate_text_card(topic, image_text, niche, facts or [], out_path)
 
-    def _generate_architecture_card(self, topic: str, niche: str,
-                                     facts: list[str], out_path: Path) -> Path:
-        # 1. Get graph structure from Gemini
-        graph = self._get_graph_data(topic, niche)
-        logger.info("Graph: %d clusters, %d standalone, %d edges",
-                    len(graph.get("clusters", [])),
-                    len(graph.get("standalone_nodes", [])),
-                    len(graph.get("edges", [])))
+    # ── Pipeline card ──────────────────────────────────────────────────────────
 
-        # 2. Render diagram to temp PNG
-        diagram_png = self._render_diagram(graph, topic)
-        logger.info("Diagram rendered: %s", diagram_png)
-
-        # 3. Composite with info panel
-        self._composite(diagram_png, topic, niche, facts, out_path)
-        logger.info("Architecture card saved: %s", out_path)
+    def _generate_pipeline_card(self, topic: str, niche: str,
+                                  facts: list[str], out_path: Path) -> Path:
+        pipeline = self._get_pipeline(topic, niche)
+        logger.info("Pipeline: %d stages", len(pipeline.get("stages", [])))
+        self._render_pipeline(pipeline, topic, niche, out_path)
+        logger.info("Pipeline card saved: %s", out_path)
         return out_path
 
-    def _get_graph_data(self, topic: str, niche: str) -> dict:
-        prompt = GRAPH_PROMPT.format(topic=topic)
+    def _get_pipeline(self, topic: str, niche: str) -> dict:
+        prompt = PIPELINE_PROMPT.format(
+            topic=topic,
+            topic_upper=topic.upper()
+        )
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self.settings.gemini_model}:generateContent"
             f"?key={self.settings.gemini_api_key}"
         )
         payload = {
-            "system_instruction": {"parts": [{"text": GRAPH_SYSTEM}]},
+            "system_instruction": {"parts": [{"text": PIPELINE_SYSTEM}]},
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.2,
-                "maxOutputTokens": 800,
+                "maxOutputTokens": 900,
                 "responseMimeType": "application/json",
             },
         }
@@ -200,242 +203,250 @@ class SmartCardGenerator:
             raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             return json.loads(raw)
 
-    def _render_diagram(self, graph: dict, topic: str) -> Path:
-        from diagrams import Diagram, Cluster, Edge
+    def _load_icon(self, icon_name: str, size: int = 52) -> object:
+        from PIL import Image, ImageDraw
+        if self._has_icons:
+            rel = ICON_MAP.get(icon_name.lower(), "onprem/compute/server.png")
+            full = self._resources / rel
+            if full.exists():
+                img = Image.open(full).convert("RGBA")
+                return img.resize((size, size), Image.LANCZOS)
+        # Placeholder circle
+        ph = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d  = ImageDraw.Draw(ph)
+        d.ellipse([4, 4, size - 4, size - 4], fill=(14, 165, 233, 200))
+        return ph
 
-        tmp_dir = Path(tempfile.mkdtemp())
-        diagram_file = tmp_dir / "diagram"  # diagrams adds .png
-
-        title = graph.get("title", topic).upper()
-        direction = graph.get("direction", "LR")
-
-        graph_attrs = {
-            "fontsize": "22",
-            "bgcolor": "#0d1117",
-            "fontcolor": "#e6edf3",
-            "fontname": "DejaVu Sans Mono Bold",
-            "pad": "0.9",
-            "splines": "curved",
-            "nodesep": "0.9",
-            "ranksep": "1.3",
-            "dpi": "150",
-            "labelloc": "t",
-        }
-        node_attrs = {
-            "fontsize": "13",
-            "fontcolor": "#e6edf3",
-            "fontname": "DejaVu Sans Mono",
-            "style": "filled",
-            "fillcolor": "#161b22",
-            "color": "#58a6ff",
-            "penwidth": "2.5",
-            "margin": "0.3",
-        }
-        edge_attrs = {
-            "color": "#58a6ff",
-            "fontcolor": "#8b949e",
-            "fontsize": "11",
-            "fontname": "DejaVu Sans Mono",
-            "penwidth": "2",
-        }
-
-        # Build node registry
-        node_registry = {}
-
-        with Diagram(
-            title,
-            filename=str(diagram_file),
-            outformat="png",
-            show=False,
-            direction=direction,
-            graph_attr=graph_attrs,
-            node_attr=node_attrs,
-            edge_attr=edge_attrs,
-        ):
-            # Create standalone nodes
-            for n in graph.get("standalone_nodes", []):
-                NodeClass = get_node_class(n.get("node_type", "server"))
-                node_registry[n["id"]] = NodeClass(n.get("label", n["id"]))
-
-            # Create clustered nodes
-            for cluster in graph.get("clusters", []):
-                c_attrs = {
-                    "bgcolor": cluster.get("color", "#161b22"),
-                    "fontcolor": "#e6edf3",
-                    "color": cluster.get("border", "#58a6ff"),
-                    "fontname": "DejaVu Sans Mono Bold",
-                    "penwidth": "2",
-                    "margin": "20",
-                }
-                with Cluster(cluster.get("name", ""), graph_attr=c_attrs):
-                    for n in cluster.get("nodes", []):
-                        NodeClass = get_node_class(n.get("node_type", "server"))
-                        node_registry[n["id"]] = NodeClass(n.get("label", n["id"]))
-
-            # Draw edges
-            for edge in graph.get("edges", []):
-                src_id = edge.get("from")
-                dst_id = edge.get("to")
-                if src_id not in node_registry or dst_id not in node_registry:
-                    continue
-
-                style = edge.get("style", "solid")
-                label = edge.get("label", "")
-                color = "#8b949e" if style == "dashed" else "#58a6ff"
-
-                edge_obj = Edge(
-                    label=label,
-                    color=color,
-                    style=style,
-                    fontcolor="#8b949e",
-                    fontsize="11",
-                )
-                node_registry[src_id] >> edge_obj >> node_registry[dst_id]
-
-        return Path(str(diagram_file) + ".png")
-
-    def _composite(self, diagram_png: Path, topic: str, niche: str,
-                   facts: list[str], out_path: Path):
-        """Composite: diagram (top 74%) + styled info panel (bottom 26%)."""
+    def _render_pipeline(self, pipeline: dict, topic: str,
+                          niche: str, out_path: Path):
         from PIL import Image, ImageDraw
 
-        DIAGRAM_H = 565
-        PANEL_H   = CARD_H - DIAGRAM_H   # 155px
+        stages = pipeline.get("stages", [])
+        flow_labels = pipeline.get("flow_labels", [])
+        title = pipeline.get("title", topic.upper())
 
-        # ── Canvas with dot-grid background ───────────────────────────
-        canvas = Image.new("RGB", (CARD_W, CARD_H), BG_DARK_PIL)
+        if not stages:
+            raise ValueError("No stages returned")
+
+        # ── Canvas: sky blue gradient ──────────────────────────────────
+        canvas = Image.new("RGB", (CARD_W, CARD_H), SKY_LIGHT)
         draw   = ImageDraw.Draw(canvas)
 
-        for x in range(0, CARD_W, 40):
-            for y in range(0, DIAGRAM_H, 40):
-                draw.ellipse([x - 1, y - 1, x + 1, y + 1], fill=(22, 32, 55))
+        for y in range(CARD_H):
+            t = y / CARD_H
+            r = int(224 - t * 32)
+            g = int(242 - t * 22)
+            b = int(254 - t * 12)
+            draw.line([(0, y), (CARD_W, y)], fill=(r, g, b))
 
-        # ── Paste diagram ──────────────────────────────────────────────
-        diagram = Image.open(diagram_png).convert("RGBA")
-        bg_diag = Image.new("RGB", diagram.size, BG_DARK_PIL)
-        bg_diag.paste(diagram, mask=diagram.split()[3])
+        # Subtle cloud blobs
+        cloud_positions = [
+            (180, 90, 160, 16), (980, 55, 200, 12),
+            (1150, 320, 140, 10), (120, 620, 180, 9),
+            (680, 700, 220, 9),
+        ]
+        for cx, cy, rc, al in cloud_positions:
+            overlay = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            od.ellipse([cx-rc, cy-rc, cx+rc, cy+rc], fill=(255, 255, 255, al))
+            canvas = Image.alpha_composite(
+                canvas.convert("RGBA"), overlay
+            ).convert("RGB")
 
-        ratio = bg_diag.width / bg_diag.height
-        if ratio > CARD_W / DIAGRAM_H:
-            nw, nh = CARD_W, int(CARD_W / ratio)
-        else:
-            nh, nw = DIAGRAM_H, int(DIAGRAM_H * ratio)
+        draw = ImageDraw.Draw(canvas)
 
-        bg_diag = bg_diag.resize((nw, nh), Image.LANCZOS)
-        xo = (CARD_W - nw) // 2
-        yo = (DIAGRAM_H - nh) // 2
-        canvas.paste(bg_diag, (xo, yo))
+        # ── Title bar ──────────────────────────────────────────────────
+        draw.rectangle([0, 0, CARD_W, 66], fill=SKY_DEEPER)
+        draw.rectangle([0, 63, CARD_W, 66], fill=(*WHITE, 60))
+        draw.text((CARD_W // 2, 33), title,
+                  font=self._font(22, bold=True),
+                  fill=WHITE, anchor="mm")
 
-        # ── Gradient fade at bottom of diagram ────────────────────────
-        grad = Image.new("RGBA", (CARD_W, 120), (0, 0, 0, 0))
-        gd   = ImageDraw.Draw(grad)
-        for i in range(120):
-            alpha = int(255 * (i / 120) ** 2)
-            gd.rectangle([0, i, CARD_W, i + 1], fill=(*BG_DARK_PIL, alpha))
-        canvas.paste(Image.new("RGB", (CARD_W, 120), BG_DARK_PIL),
-                     (0, DIAGRAM_H - 120), mask=grad.split()[3])
+        # ── Layout ─────────────────────────────────────────────────────
+        MARGIN_X   = 52
+        MARGIN_TOP = 82
+        BOTTOM_BAR = 52
+        STEP_ROW   = 38
+        CONTENT_H  = CARD_H - MARGIN_TOP - BOTTOM_BAR - STEP_ROW
+        STAGE_COUNT = len(stages)
+        STAGE_W    = (CARD_W - 2 * MARGIN_X) // STAGE_COUNT
+        NODE_W     = STAGE_W - 28
+        ICON_SZ    = 50
+        HEADER_H   = 54
+        CORNER_R   = 12
+        ARROW_Y    = MARGIN_TOP + HEADER_H + (CONTENT_H - HEADER_H) // 2
 
-        # ── Glowing side accent bars ───────────────────────────────────
-        accent = {
-            "system_design": BLUE_PIL,
-            "webdev":        GREEN_PIL,
-            "career":        PURPLE_PIL,
-        }.get(niche, BLUE_PIL)
-        accent2 = PURPLE_PIL if niche == "system_design" else BLUE_PIL
+        stage_cx = []
 
-        for i in range(5):
-            a = int(180 * (1 - i / 5))
-            draw.rectangle([i, 0, i + 1, DIAGRAM_H], fill=(*accent, a))
-            draw.rectangle([CARD_W - i - 1, 0, CARD_W - i, DIAGRAM_H],
-                           fill=(*accent2, a))
+        for si, stage in enumerate(stages):
+            pal   = STAGE_PALETTES[si % len(STAGE_PALETTES)]
+            col   = pal["header"]
+            light = pal["light"]
+            sx    = MARGIN_X + si * STAGE_W
+            sy    = MARGIN_TOP
+            cx_s  = sx + STAGE_W // 2
+            stage_cx.append(cx_s)
 
-        # ── Corner glow blobs ──────────────────────────────────────────
-        for cx, cy, col in [(0, 0, accent), (CARD_W, 0, accent2)]:
-            for r, a in [(80, 12), (50, 20), (25, 30)]:
-                draw.ellipse([cx - r, cy - r, cx + r, cy + r],
-                             fill=(*col, a))
-
-        # ── Info panel ─────────────────────────────────────────────────
-        panel_y = DIAGRAM_H
-        draw.rectangle([0, panel_y, CARD_W, CARD_H], fill=BG_CARD_PIL)
-
-        # Glowing top border
-        for i in range(3):
-            a = int(255 * (1 - i / 3))
-            draw.rectangle([0, panel_y + i, CARD_W, panel_y + i + 1],
-                           fill=(*accent, a))
-
-        # Topic title
-        title = topic.upper()
-        draw.text((CARD_W // 2, panel_y + 32), title,
-                  font=self._font(28), fill=WHITE_PIL, anchor="mm")
-
-        # Underline
-        tw = min(len(title) * 17, CARD_W - 80)
-        draw.rectangle(
-            [CARD_W // 2 - tw // 2, panel_y + 50,
-             CARD_W // 2 + tw // 2, panel_y + 52],
-            fill=(*accent, 100)
-        )
-
-        # Fact chips
-        chip_colors = [BLUE_PIL, CYAN_PIL, GREEN_PIL, ORANGE_PIL]
-        chip_x, chip_y = 30, panel_y + 64
-        for i, fact in enumerate(facts[:4]):
-            fact_s = fact[:55].strip()
-            fact_w = len(fact_s) * 11 + 32
-            if chip_x + fact_w > CARD_W - 30:
-                chip_x, chip_y = 30, chip_y + 40
-
-            # Chip glow fill
-            canvas.paste(
-                Image.new("RGB", (fact_w, 30), chip_colors[i % 4]),
-                (chip_x, chip_y),
-                mask=Image.new("L", (fact_w, 30), 28)
+            # Card shadow
+            draw.rounded_rectangle(
+                [sx + 10, sy + 4, sx + STAGE_W - 6, sy + CONTENT_H + 4],
+                radius=CORNER_R, fill=(*col, 22)
+            )
+            # Card body
+            draw.rounded_rectangle(
+                [sx + 8, sy, sx + STAGE_W - 8, sy + CONTENT_H],
+                radius=CORNER_R, fill=WHITE
             )
             draw.rounded_rectangle(
-                [chip_x, chip_y, chip_x + fact_w, chip_y + 30],
-                radius=6, outline=chip_colors[i % 4], width=1
+                [sx + 8, sy, sx + STAGE_W - 8, sy + CONTENT_H],
+                radius=CORNER_R, outline=col, width=2
             )
-            draw.text((chip_x + 16, chip_y + 15), fact_s,
-                      font=self._font(14),
-                      fill=chip_colors[i % 4], anchor="lm")
-            chip_x += fact_w + 12
 
-        # ── Bottom branding bar ────────────────────────────────────────
-        bar_y = CARD_H - 44
-        draw.rectangle([0, bar_y, CARD_W, CARD_H], fill=(10, 14, 24))
-        draw.rectangle([0, bar_y, CARD_W, bar_y + 1], fill=(*accent, 60))
+            # Header
+            draw.rounded_rectangle(
+                [sx + 8, sy, sx + STAGE_W - 8, sy + HEADER_H],
+                radius=CORNER_R, fill=col
+            )
+            draw.rectangle(
+                [sx + 8, sy + HEADER_H - CORNER_R,
+                 sx + STAGE_W - 8, sy + HEADER_H],
+                fill=col
+            )
+            draw.text((cx_s, sy + 18), stage.get("title", ""),
+                      font=self._font(15, bold=True),
+                      fill=WHITE, anchor="mm")
+            draw.text((cx_s, sy + 38), stage.get("subtitle", ""),
+                      font=self._font(11, bold=False),
+                      fill=WHITE, anchor="mm")
 
-        draw.text((30, bar_y + 22), "⚡ @byte_blueprint",
-                  font=self._font(17), fill=accent, anchor="lm")
+            # Nodes
+            nodes = stage.get("nodes", [])
+            node_count = max(len(nodes), 1)
+            NODE_H = min(114, (CONTENT_H - HEADER_H - 20) // node_count - 12)
+            total_h = node_count * NODE_H + (node_count - 1) * 12
+            start_y = sy + HEADER_H + (CONTENT_H - HEADER_H - total_h) // 2
+
+            for ni, node in enumerate(nodes):
+                ny   = start_y + ni * (NODE_H + 12)
+                nx   = sx + 8 + (STAGE_W - 16 - NODE_W) // 2
+                icon = self._load_icon(node.get("icon", "server"), ICON_SZ)
+
+                # Node card
+                draw.rounded_rectangle(
+                    [nx, ny, nx + NODE_W, ny + NODE_H],
+                    radius=9, fill=light
+                )
+                draw.rounded_rectangle(
+                    [nx, ny, nx + NODE_W, ny + NODE_H],
+                    radius=9, outline=col, width=1
+                )
+
+                # Icon
+                ix = nx + (NODE_W - ICON_SZ) // 2
+                iy = ny + 8
+                canvas.paste(icon, (ix, iy), mask=icon.split()[3])
+
+                # Label
+                label_y = ny + ICON_SZ + 14
+                for li, line in enumerate(
+                    node.get("label", "").split("\\n")
+                ):
+                    draw.text((nx + NODE_W // 2, label_y + li * 16),
+                              line,
+                              font=self._font(12, bold=True),
+                              fill=NAVY, anchor="mm")
+
+        # ── Arrows between stages ──────────────────────────────────────
+        for i in range(STAGE_COUNT - 1):
+            pal_from = STAGE_PALETTES[i % len(STAGE_PALETTES)]
+            x1 = stage_cx[i] + STAGE_W // 2 - 14
+            x2 = stage_cx[i + 1] - STAGE_W // 2 + 14
+            ay = ARROW_Y
+
+            # Line
+            draw.line([(x1, ay), (x2 - 16, ay)],
+                      fill=SKY_DEEPER, width=4)
+            # Arrowhead
+            draw.polygon([
+                (x2 - 16, ay - 10),
+                (x2,      ay),
+                (x2 - 16, ay + 10),
+            ], fill=SKY_DEEPER)
+
+            # Label pill
+            mx = (x1 + x2) // 2
+            label = flow_labels[i] if i < len(flow_labels) else ""
+            if label:
+                pw = len(label) * 8 + 28
+                ph = 26
+                draw.rounded_rectangle(
+                    [mx - pw//2, ay - ph//2 - 22,
+                     mx + pw//2, ay - ph//2 - 22 + ph],
+                    radius=7, fill=SKY_DEEPER
+                )
+                draw.text((mx, ay - 22),
+                          label,
+                          font=self._font(11, bold=False),
+                          fill=WHITE, anchor="mm")
+
+        # ── Step number circles ────────────────────────────────────────
+        step_y = MARGIN_TOP + CONTENT_H + 10
+        for si, stage in enumerate(stages):
+            pal = STAGE_PALETTES[si % len(STAGE_PALETTES)]
+            cx_s = stage_cx[si]
+            draw.ellipse(
+                [cx_s - 14, step_y, cx_s + 14, step_y + 28],
+                fill=pal["header"], outline=WHITE, width=2
+            )
+            draw.text((cx_s, step_y + 14), str(si + 1),
+                      font=self._font(14, bold=True),
+                      fill=WHITE, anchor="mm")
+
+        # ── Bottom bar ─────────────────────────────────────────────────
+        bar_y = CARD_H - BOTTOM_BAR
+        draw.rectangle([0, bar_y, CARD_W, CARD_H], fill=SKY_DEEPER)
+        draw.rectangle([0, bar_y, CARD_W, bar_y + 2], fill=WHITE)
+
+        draw.text((30, bar_y + BOTTOM_BAR // 2),
+                  "⚡ @byte_blueprint",
+                  font=self._font(17, bold=True),
+                  fill=WHITE, anchor="lm")
 
         niche_label = {
-            "system_design": "SYSTEM DESIGN",
-            "webdev":        "WEB DEV",
-            "career":        "CAREER",
-        }.get(niche, "TECH")
-        draw.text((CARD_W // 2, bar_y + 22), niche_label,
-                  font=self._font(16), fill=MUTED_PIL, anchor="mm")
+            "system_design": "SYSTEM DESIGN SERIES",
+            "webdev":        "WEB DEV SERIES",
+            "career":        "CAREER SERIES",
+        }.get(niche, "TECH SERIES")
+        draw.text((CARD_W // 2, bar_y + BOTTOM_BAR // 2),
+                  niche_label,
+                  font=self._font(14, bold=False),
+                  fill=WHITE, anchor="mm")
 
         tags = {
             "system_design": "#SystemDesign  #HLD  #SoftwareEngineering",
             "webdev":        "#WebDev  #Backend  #Programming",
             "career":        "#CareerAdvice  #IndianDev",
         }.get(niche, "#Tech")
-        draw.text((CARD_W - 30, bar_y + 22), tags,
-                  font=self._font(14), fill=MUTED_PIL, anchor="rm")
+        draw.text((CARD_W - 30, bar_y + BOTTOM_BAR // 2),
+                  tags,
+                  font=self._font(13, bold=False),
+                  fill=WHITE, anchor="rm")
 
         canvas.save(str(out_path), "PNG", quality=95)
 
-    def _generate_pillow_card(self, topic: str, image_text: str, niche: str,
-                               facts: list[str], out_path: Path) -> Path:
+    # ── Text fallback card ─────────────────────────────────────────────────────
+
+    def _generate_text_card(self, topic: str, image_text: str, niche: str,
+                             facts: list[str], out_path: Path) -> Path:
         from PIL import Image, ImageDraw
 
-        img = Image.new("RGB", (CARD_W, CARD_H), BG_DARK_PIL)
+        img  = Image.new("RGB", (CARD_W, CARD_H), BG_DARK_PIL)
         draw = ImageDraw.Draw(img)
-        accent = {"system_design": BLUE_PIL, "webdev": GREEN_PIL,
-                  "career": PURPLE_PIL}.get(niche, BLUE_PIL)
+        accent = {
+            "system_design": BLUE_PIL,
+            "webdev":        GREEN_PIL,
+            "career":        PURPLE_PIL,
+        }.get(niche, BLUE_PIL)
 
         draw.rectangle([0, 0, CARD_W, 48], fill=BG_CARD_PIL)
         for i, color in enumerate([RED_PIL, YELLOW_PIL, GREEN_PIL]):
@@ -448,8 +459,8 @@ class SmartCardGenerator:
         title_lines = textwrap.wrap(topic.upper(), width=32)
         y = 120
         for line in title_lines[:2]:
-            draw.text((CARD_W // 2, y), line, font=self._font(58),
-                      fill=WHITE_PIL, anchor="mm")
+            draw.text((CARD_W // 2, y), line,
+                      font=self._font(58), fill=WHITE_PIL, anchor="mm")
             y += 72
 
         draw.rectangle([60, y + 10, CARD_W - 60, y + 14], fill=accent)
@@ -463,25 +474,28 @@ class SmartCardGenerator:
 
         draw.rectangle([0, CARD_H - 52, CARD_W, CARD_H], fill=BG_CARD_PIL)
         draw.rectangle([0, CARD_H - 52, CARD_W, CARD_H - 49], fill=accent)
-        draw.text((40, CARD_H - 26), "🧵 THREAD", font=self._font(20),
-                  fill=accent, anchor="lm")
-        tags = {"system_design": "#SystemDesign #HLD #SoftwareEngineering",
-                "webdev": "#WebDev #Backend #Programming",
-                "career": "#CareerAdvice #IndianDev"}.get(niche, "#Tech")
-        draw.text((CARD_W - 40, CARD_H - 26), tags, font=self._font(18),
-                  fill=GREY_PIL, anchor="rm")
+        draw.text((40, CARD_H - 26), "🧵 THREAD",
+                  font=self._font(20), fill=accent, anchor="lm")
+        tags = {
+            "system_design": "#SystemDesign #HLD #SoftwareEngineering",
+            "webdev":        "#WebDev #Backend #Programming",
+            "career":        "#CareerAdvice #IndianDev",
+        }.get(niche, "#Tech")
+        draw.text((CARD_W - 40, CARD_H - 26), tags,
+                  font=self._font(18), fill=GREY_PIL, anchor="rm")
 
         img.save(str(out_path), "PNG")
-        logger.info("Pillow card saved: %s", out_path)
+        logger.info("Text card saved: %s", out_path)
         return out_path
 
-    def _font(self, size: int):
+    def _font(self, size: int, bold: bool = True):
         from PIL import ImageFont
-        for fp in [
+        candidates = [
+            f"/usr/share/fonts/truetype/dejavu/DejaVuSans{'Bold' if bold else ''}.ttf",
+            f"/usr/share/fonts/truetype/liberation/LiberationSans-{'Bold' if bold else 'Regular'}.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        ]:
+        ]
+        for fp in candidates:
             try:
                 return ImageFont.truetype(fp, size)
             except (IOError, OSError):
